@@ -1,0 +1,105 @@
+pipeline {
+    agent any
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'master', description: 'Branch to build')
+    }
+    
+    environment {
+        POM_VERSION = ""
+        SONAR_HOST_URL = "http://172.31.85.158:9000"   
+        SONAR_TOKEN = credentials('sonar-token')    
+    }
+
+    stages {
+
+        stage('Git Checkout') {
+            steps {
+                git branch: "${params.BRANCH}", url: 'https://github.com/Tejaspise93/my-app-java.git'
+                script {
+                    POM_VERSION = sh(
+                        script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
+                        returnStdout: true
+                    ).trim()
+                    echo "--- Detected Version: ${POM_VERSION} ---"
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                sh """
+                    mvn sonar:sonar \
+                        -Dsonar.projectKey=myweb \
+                        -Dsonar.host.url=${SONAR_HOST_URL} \
+                        -Dsonar.login=${SONAR_TOKEN}
+                """
+            }
+        }
+
+        stage('Nexus Upload') {
+            steps {
+                script {
+                    // Dynamically find the WAR file
+                    def warFile = sh(
+                        script: "find target/ -name '*.war' | head -1",
+                        returnStdout: true
+                    ).trim()
+                    echo "--- Uploading artifact: ${warFile} ---"
+
+                    nexusArtifactUploader artifacts: [[
+                        artifactId: 'myweb',
+                        classifier: '',
+                        file: warFile,
+                        type: 'war'
+                    ]],
+                    credentialsId: 'nexus3',
+                    groupId: 'in.javahome',
+                    nexusUrl: '172.31.85.158:8081',
+                    nexusVersion: 'nexus3',
+                    protocol: 'http',
+                    repository: 'maven-releases',
+                    version: "${POM_VERSION}"
+                }
+            }
+        }
+    }
+}
+
+
+
+
+┌──────────────────────────────────────────────────────────┐
+│                                                          │
+│  params.BRANCH = "master"                                │
+│       ↓                                                  │
+│  [Stage 1] Git Checkout                                  │
+│       → pulls code from GitHub                           │
+│       → reads pom.xml → POM_VERSION = "0.0.7"           │
+│       ↓                                                  │
+│  [Stage 2] Maven Build                                   │
+│       → compiles code                                    │
+│       → packages → target/myweb-0.0.7.war               │
+│       ↓                                                  │
+│  [Stage 3] Maven Test                                    │
+│       → runs JUnit tests → 2 passed ✅                   │
+│       ↓                                                  │
+│  [Stage 4] SonarQube                                     │
+│       → scans code quality                               │
+│       → report sent to 172.31.85.158:9000 ✅             │
+│       ↓                                                  │
+│  [Stage 5] Nexus Upload                                  │
+│       → finds WAR dynamically                            │
+│       → uploads to 172.31.85.158:8081 ✅                 │
+│                                                
