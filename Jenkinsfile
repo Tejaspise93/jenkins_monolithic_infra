@@ -8,7 +8,6 @@ pipeline {
         TOOLS_SERVER_IP    = "x.x.x.x"       // SonarQube, Nexus, Tomcat server IP
 
         // Built automatically from IP above — do not change below
-        POM_VERSION        = ""
         SONAR_HOST_URL     = "http://${TOOLS_SERVER_IP}:9000"
         SONAR_TOKEN        = credentials('sonar-token')
         NEXUS_URL          = "http://${TOOLS_SERVER_IP}:8081"
@@ -28,11 +27,11 @@ pipeline {
                 git branch: "${params.BRANCH}",
                     url: 'https://github.com/Tejaspise93/my-app-java.git'
                 script {
-                    POM_VERSION = sh(
+                    env.POM_VERSION = sh(
                         script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
                         returnStdout: true
                     ).trim()
-                    echo "--- Detected Version: ${POM_VERSION} ---"
+                    echo "--- Detected Version: ${env.POM_VERSION} ---"
                 }
             }
         }
@@ -47,6 +46,11 @@ pipeline {
             steps {
                 sh 'mvn test'
             }
+            post {
+                always {
+                    junit '**/target/surefire-reports/*.xml'
+                }
+            }
         }
 
         stage('SonarQube Analysis') {
@@ -57,6 +61,14 @@ pipeline {
                         -Dsonar.host.url=${SONAR_HOST_URL} \
                         -Dsonar.login=\$SONAR_TOKEN
                 """
+            }
+        }
+
+        stage('SonarQube Quality Gate') {
+            steps {
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
             }
         }
 
@@ -81,7 +93,7 @@ pipeline {
                     nexusVersion: 'nexus3',
                     protocol: 'http',
                     repository: "${NEXUS_REPO}",
-                    version: "${POM_VERSION}"
+                    version: "${env.POM_VERSION}"
                 }
             }
         }
@@ -89,7 +101,7 @@ pipeline {
         stage('Deploy to Tomcat') {
             steps {
                 script {
-                    def nexusWarUrl = "${NEXUS_URL}/repository/${NEXUS_REPO}/in/javahome/myweb/${POM_VERSION}/myweb-${POM_VERSION}.war"
+                    def nexusWarUrl = "${NEXUS_URL}/repository/${NEXUS_REPO}/in/javahome/myweb/${env.POM_VERSION}/myweb-${env.POM_VERSION}.war"
                     echo "--- Pulling WAR from Nexus: ${nexusWarUrl} ---"
 
                     withCredentials([
@@ -130,6 +142,20 @@ pipeline {
                     echo "--- App deployed at: ${TOMCAT_URL}/myweb ---"
                 }
             }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Pipeline succeeded — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            echo "🚀 App live at: ${TOMCAT_URL}/myweb"
+        }
+        failure {
+            echo "❌ Pipeline failed — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            echo "Check console output: ${env.BUILD_URL}"
+        }
+        always {
+            cleanWs()   // clean workspace after every run to avoid stale artifacts
         }
     }
 }

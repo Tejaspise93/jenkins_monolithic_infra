@@ -165,6 +165,67 @@ tomstart    # starts tomcat
 tomstop     # stops tomcat
 ```
 
+> **Note:** The aliases are a convenience for manual use. They call the same `startup.sh` and `shutdown.sh` scripts. However, if the server reboots, Tomcat will not come back up automatically — for that you need the systemd service below.
+
+**Configure Tomcat as a systemd service (auto-start on reboot):**
+
+Step 1 — Verify your Java path first:
+```bash
+readlink -f $(which java)
+# Example output: /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+# Use the path up to (not including) /bin/java as JAVA_HOME below
+```
+
+Step 2 — Create the service file:
+```bash
+vi /etc/systemd/system/tomcat.service
+```
+Paste this content:
+```ini
+[Unit]
+Description=Apache Tomcat Web Application Container
+After=network.target
+
+[Service]
+Type=forking
+User=root
+Group=root
+
+Environment="JAVA_HOME=/usr/lib/jvm/java-17-openjdk"
+Environment="CATALINA_HOME=/opt/tomcat"
+Environment="CATALINA_BASE=/opt/tomcat"
+Environment="CATALINA_PID=/opt/tomcat/temp/tomcat.pid"
+
+ExecStart=/opt/tomcat/bin/startup.sh
+ExecStop=/opt/tomcat/bin/shutdown.sh
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Step 3 — Reload systemd and enable the service:
+```bash
+systemctl daemon-reload
+systemctl enable tomcat      # auto-start on boot
+systemctl start tomcat       # start it now
+```
+
+Step 4 — Verify:
+```bash
+systemctl status tomcat
+```
+
+**Useful systemd commands:**
+```bash
+systemctl start tomcat
+systemctl stop tomcat
+systemctl restart tomcat
+systemctl status tomcat
+```
+
 ---
 
 ### Maven (Jenkins Server)
@@ -244,7 +305,7 @@ Browser → http://<TOOLS-SERVER-IP>:8081
 Username: admin
 Password: cat /opt/sonatype-work/nexus3/admin.password
 ```
-After first login, Nexus will ask you to set a new password and configure anonymous access.
+After first login, Nexus will ask you to set a new password and configure anonymous access. **Disable anonymous access.**
 
 **Step 2 — Create maven-releases Repository:**
 ```
@@ -257,10 +318,12 @@ Select recipe: maven2 (hosted)
     Name:              maven-releases
     Version policy:    Release
     Layout policy:     Strict
-    Deployment policy: Allow redeploy    ← important
+    Deployment policy: Disable redeploy    ← keeps release artifacts immutable
     ↓
 Click: Create repository
 ```
+
+> **Note:** Release repositories should be immutable. With redeploy disabled, uploading the same version twice will fail with a 400 error, which is intentional — it forces a version bump in `pom.xml` for every release and prevents accidental overwrites of deployed artifacts.
 
 **Step 3 — Add Nexus Credentials to Jenkins:**
 ```
@@ -370,7 +433,6 @@ pipeline {
         TOOLS_SERVER_IP    = "x.x.x.x"       // SonarQube, Nexus, Tomcat server IP
 
         // Built automatically from IP above — do not change below
-        POM_VERSION        = ""
         SONAR_HOST_URL     = "http://${TOOLS_SERVER_IP}:9000"
         SONAR_TOKEN        = credentials('sonar-token')
         NEXUS_URL          = "http://${TOOLS_SERVER_IP}:8081"
@@ -390,11 +452,12 @@ pipeline {
                 git branch: "${params.BRANCH}",
                     url: 'https://github.com/Tejaspise93/my-app-java.git'
                 script {
-                    POM_VERSION = sh(
+                    // Use env.POM_VERSION so the value persists across all stages
+                    env.POM_VERSION = sh(
                         script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
                         returnStdout: true
                     ).trim()
-                    echo "--- Detected Version: ${POM_VERSION} ---"
+                    echo "--- Detected Version: ${env.POM_VERSION} ---"
                 }
             }
         }
@@ -409,6 +472,12 @@ pipeline {
             steps {
                 sh 'mvn test'
             }
+            post {
+                always {
+                    // Publish JUnit results so test trends appear in Jenkins UI
+                    junit '**/target/surefire-reports/*.xml'
+                }
+            }
         }
 
         stage('SonarQube Analysis') {
@@ -419,6 +488,15 @@ pipeline {
                         -Dsonar.host.url=${SONAR_HOST_URL} \
                         -Dsonar.login=\$SONAR_TOKEN
                 """
+            }
+        }
+
+        // Enforce Quality Gate — pipeline fails if Sonar gate does not pass
+        stage('SonarQube Quality Gate') {
+            steps {
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
             }
         }
 
@@ -443,7 +521,7 @@ pipeline {
                     nexusVersion: 'nexus3',
                     protocol: 'http',
                     repository: "${NEXUS_REPO}",
-                    version: "${POM_VERSION}"
+                    version: "${env.POM_VERSION}"
                 }
             }
         }
@@ -451,7 +529,7 @@ pipeline {
         stage('Deploy to Tomcat') {
             steps {
                 script {
-                    def nexusWarUrl = "${NEXUS_URL}/repository/${NEXUS_REPO}/in/javahome/myweb/${POM_VERSION}/myweb-${POM_VERSION}.war"
+                    def nexusWarUrl = "${NEXUS_URL}/repository/${NEXUS_REPO}/in/javahome/myweb/${env.POM_VERSION}/myweb-${env.POM_VERSION}.war"
                     echo "--- Pulling WAR from Nexus: ${nexusWarUrl} ---"
 
                     withCredentials([
@@ -494,6 +572,21 @@ pipeline {
             }
         }
     }
+
+    // Post block for notifications and workspace cleanup
+    post {
+        success {
+            echo "Pipeline succeeded — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            echo "App live at: ${TOMCAT_URL}/myweb"
+        }
+        failure {
+            echo "Pipeline failed — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            echo "Check console output: ${env.BUILD_URL}"
+        }
+        always {
+            cleanWs()   // clean workspace after every run to avoid stale artifacts
+        }
+    }
 }
 ```
 
@@ -505,8 +598,9 @@ pipeline {
 |---|---|
 | **Git Checkout** | Pulls code from GitHub using the branch parameter. Reads `pom.xml` to extract project version dynamically. |
 | **Build** | Runs `mvn clean package -DskipTests` to compile and produce a `.war` file in `target/`. |
-| **Test** | Runs `mvn test` to execute all JUnit tests. Pipeline stops if any test fails. |
+| **Test** | Runs `mvn test` to execute all JUnit tests. Publishes surefire XML reports to Jenkins. Pipeline stops if any test fails. |
 | **SonarQube Analysis** | Scans code quality and sends report to SonarQube server. |
+| **SonarQube Quality Gate** | Waits for SonarQube to evaluate the gate. Aborts the pipeline if the gate fails. |
 | **Nexus Upload** | Dynamically finds the `.war` and uploads it to the `maven-releases` repository on Nexus. |
 | **Deploy to Tomcat** | Downloads WAR from Nexus, undeploys old version, deploys new version to Tomcat. |
 
@@ -520,7 +614,7 @@ GitHub sends webhook to Jenkins (automatic)
             ↓
     [Stage 1] Git Checkout
         → pulls branch: params.BRANCH
-        → extracts version from pom.xml
+        → extracts version from pom.xml → stored as env.POM_VERSION
             ↓
     [Stage 2] Build
         → mvn clean package
@@ -529,20 +623,27 @@ GitHub sends webhook to Jenkins (automatic)
     [Stage 3] Test
         → mvn test
         → JUnit tests must pass
+        → surefire reports published to Jenkins
             ↓
     [Stage 4] SonarQube Analysis
         → scans code quality
         → report sent to Tools Server:9000
             ↓
-    [Stage 5] Nexus Upload
+    [Stage 5] SonarQube Quality Gate
+        → waits for gate result (max 2 min)
+        → pipeline aborts if gate fails
+            ↓
+    [Stage 6] Nexus Upload
         → finds WAR dynamically
         → uploads to Tools Server:8081/maven-releases
             ↓
-    [Stage 6] Deploy to Tomcat
+    [Stage 7] Deploy to Tomcat
         → downloads WAR from Nexus
         → undeploys old version
         → deploys new version to Tools Server:8080
         → app live at Tools Server:8080/myweb
+            ↓
+    [Post] Workspace cleaned, result echoed
 ```
 
 ---
@@ -592,6 +693,59 @@ GitHub → Repo → Settings → Webhooks → Recent Deliveries
 **Pull from Nexus to deploy** — Tomcat pulls the WAR from Nexus instead of using the local build artifact. This validates the full chain — the artifact stored in Nexus is exactly what gets deployed.
 
 **Webhook automation** — GitHub webhook eliminates manual triggering. Every push automatically starts the full pipeline.
+
+**Immutable release artifacts** — The `maven-releases` repository has redeploy disabled. This enforces version discipline — the same version cannot be overwritten once uploaded, ensuring traceability between what is in Nexus and what is deployed.
+
+---
+
+## Improvements From Previous Version
+
+The following changes were made to improve pipeline correctness and observability.
+
+### `env.POM_VERSION` scoping fix
+The original pipeline declared `POM_VERSION = ""` in the `environment {}` block and then assigned it inside a `script {}` block using a plain Groovy variable. In declarative pipelines this assignment does not persist across stages — downstream stages would silently receive an empty string. The fix is to write `env.POM_VERSION = ...` so Jenkins stores it in the environment map and makes it available to all subsequent stages.
+
+### SonarQube Quality Gate enforced
+The original pipeline ran SonarQube analysis but never checked whether the quality gate passed or failed, meaning a build with new bugs or security vulnerabilities would continue all the way to deployment. A new **SonarQube Quality Gate** stage was added after the analysis stage using `waitForQualityGate abortPipeline: true`, wrapped in a `timeout(time: 2, unit: 'MINUTES')` to prevent the pipeline from hanging if SonarQube is unreachable.
+
+### JUnit test results published
+The original Test stage ran `mvn test` but never collected the results. Jenkins has no visibility into which tests passed or failed, and no trend data over time. A `post { always { junit '**/target/surefire-reports/*.xml' } }` block was added inside the Test stage so results are published even when tests fail — which is exactly when you most need to see them.
+
+### `post {}` block added
+The original pipeline had no post-run handling. Three handlers were added:
+- `success` — echoes the job name, build number, and live app URL
+- `failure` — echoes the job name, build number, and a link to the console output
+- `always` — runs `cleanWs()` to delete the workspace after every build, preventing stale WARs or leftover files from a previous build interfering with the next one
+
+### Nexus `maven-releases` deployment policy corrected
+The original guide set the `maven-releases` repository to `Allow redeploy`. Release repositories should be immutable — once a version is uploaded it must not be overwritten. The setup guide now sets **Disable redeploy**, with a note explaining that a 400 error on re-upload is intentional and forces a version bump in `pom.xml` for every release.
+
+### Tomcat configured as a systemd service
+Tomcat was previously started with `startup.sh` only, which does not survive a server reboot. A systemd unit file was added so Tomcat starts automatically on boot and can be managed with `systemctl start|stop|restart tomcat`. The existing aliases (`tomstart`/`tomstop`) are kept for convenience — they still work for manual use and call the same underlying scripts.
+
+---
+
+## Suggested Improvements
+
+The following improvements were identified but not implemented. They are documented here for future reference.
+
+### Use a dedicated SonarQube service account
+The current setup generates the Jenkins token from the `admin` user account. If the admin password is rotated or the account is disabled, the integration breaks. The better approach is to create a dedicated service account in SonarQube (e.g., `jenkins-bot`), grant it only the permissions it needs, and generate the token from that account.
+
+### Disable anonymous access on Nexus
+After the initial Nexus setup wizard, anonymous access should be explicitly disabled. Anonymous access allows unauthenticated users to browse and download artifacts from the repository. This is a security risk in any environment accessible beyond localhost.
+
+### Run Nexus under a dedicated service account
+Nexus is currently configured to run as `ec2-user`, which is a privileged default cloud user with broad system access. The better practice is to create a dedicated `nexus` OS user with no login shell and no sudo rights, scoped only to the Nexus directories — the same pattern already used for SonarQube with the `sonar` user.
+
+### Configure SonarQube with a production database
+SonarQube 9.x ships with an embedded H2 database which is not supported for production use. For anything beyond a local demo, SonarQube should be configured to use PostgreSQL. This is set in `sonarqube-9.1.0.47736/conf/sonar.properties`.
+
+### Store the Jenkinsfile in the repository
+The Jenkinsfile should live in the root of the application repository rather than being pasted into the Jenkins job configuration. This makes the pipeline version-controlled alongside the application code, allows pipeline changes to be reviewed in pull requests, and means the pipeline history is part of the Git history.
+
+### Add email or Slack notifications
+The current `post {}` block only echoes messages to the console. In practice, the team needs to be notified when a build fails. The Jenkins Email Extension Plugin or Slack Notification Plugin can be used to send alerts to the relevant channel or individuals on failure.
 
 ---
 
