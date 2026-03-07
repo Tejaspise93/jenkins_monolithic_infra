@@ -13,6 +13,7 @@ pipeline {
         NEXUS_URL          = "http://${TOOLS_SERVER_IP}:8081"
         NEXUS_REPO         = "maven-releases"
         TOMCAT_URL         = "http://${TOOLS_SERVER_IP}:8080"
+        email_recipient     = "you_email@gmail.com"
     }
     // ============================================================
 
@@ -27,6 +28,7 @@ pipeline {
                 git branch: "${params.BRANCH}",
                     url: 'https://github.com/Tejaspise93/my-app-java.git'
                 script {
+                    // Use env.POM_VERSION so the value persists across all stages
                     env.POM_VERSION = sh(
                         script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
                         returnStdout: true
@@ -48,6 +50,7 @@ pipeline {
             }
             post {
                 always {
+                    // Publish JUnit results so test trends appear in Jenkins UI
                     junit '**/target/surefire-reports/*.xml'
                 }
             }
@@ -64,6 +67,7 @@ pipeline {
             }
         }
 
+        // Enforce Quality Gate — pipeline fails if Sonar gate does not pass
         stage('SonarQube Quality Gate') {
             steps {
                 timeout(time: 2, unit: 'MINUTES') {
@@ -145,14 +149,39 @@ pipeline {
         }
     }
 
+    // Post block for notifications and workspace cleanup
     post {
         success {
-            echo "✅ Pipeline succeeded — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
-            echo "🚀 App live at: ${TOMCAT_URL}/myweb"
+            echo "Pipeline succeeded — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            echo "App live at: ${TOMCAT_URL}/myweb"
+            mail to: "${email_recipient}",
+                 subject: "Build Succeeded: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: """
+                     Build succeeded.
+
+                     Job:     ${env.JOB_NAME}
+                     Build:   #${env.BUILD_NUMBER}
+                     Branch:  ${params.BRANCH}
+                     App URL: ${TOMCAT_URL}/myweb
+
+                     Console: ${env.BUILD_URL}
+                 """
         }
         failure {
-            echo "❌ Pipeline failed — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            echo "Pipeline failed — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
             echo "Check console output: ${env.BUILD_URL}"
+            mail to: "${email_recipient}",
+                 subject: "Build Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: """
+                     Build failed.
+
+                     Job:    ${env.JOB_NAME}
+                     Build:  #${env.BUILD_NUMBER}
+                     Branch: ${params.BRANCH}
+
+                     Check the console output for details:
+                     ${env.BUILD_URL}
+                 """
         }
         always {
             cleanWs()   // clean workspace after every run to avoid stale artifacts

@@ -438,6 +438,7 @@ pipeline {
         NEXUS_URL          = "http://${TOOLS_SERVER_IP}:8081"
         NEXUS_REPO         = "maven-releases"
         TOMCAT_URL         = "http://${TOOLS_SERVER_IP}:8080"
+        email_recipient     = "you_email@gmail.com"
     }
     // ============================================================
 
@@ -578,10 +579,34 @@ pipeline {
         success {
             echo "Pipeline succeeded — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
             echo "App live at: ${TOMCAT_URL}/myweb"
+            mail to: "${email_recipient}",
+                 subject: "Build Succeeded: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: """
+                     Build succeeded.
+
+                     Job:     ${env.JOB_NAME}
+                     Build:   #${env.BUILD_NUMBER}
+                     Branch:  ${params.BRANCH}
+                     App URL: ${TOMCAT_URL}/myweb
+
+                     Console: ${env.BUILD_URL}
+                 """
         }
         failure {
             echo "Pipeline failed — ${env.JOB_NAME} #${env.BUILD_NUMBER}"
             echo "Check console output: ${env.BUILD_URL}"
+            mail to: "${email_recipient}",
+                 subject: "Build Failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: """
+                     Build failed.
+
+                     Job:    ${env.JOB_NAME}
+                     Build:  #${env.BUILD_NUMBER}
+                     Branch: ${params.BRANCH}
+
+                     Check the console output for details:
+                     ${env.BUILD_URL}
+                 """
         }
         always {
             cleanWs()   // clean workspace after every run to avoid stale artifacts
@@ -723,6 +748,9 @@ The original guide set the `maven-releases` repository to `Allow redeploy`. Rele
 ### Tomcat configured as a systemd service
 Tomcat was previously started with `startup.sh` only, which does not survive a server reboot. A systemd unit file was added so Tomcat starts automatically on boot and can be managed with `systemctl start|stop|restart tomcat`. The existing aliases (`tomstart`/`tomstop`) are kept for convenience — they still work for manual use and call the same underlying scripts.
 
+### Email notifications added
+The `post {}` block previously only echoed messages to the Jenkins console, meaning the team had no visibility into build outcomes unless they were actively watching Jenkins. Email notifications were added to both the `success` and `failure` handlers using the built-in `mail` step. Emails include the job name, build number, branch, and a direct link to the console output. Update `team@example.com` to the real recipient address and ensure the Jenkins SMTP server is configured under `Manage Jenkins → Configure System → E-mail Notification`.
+
 ---
 
 ## Suggested Improvements
@@ -741,11 +769,6 @@ Nexus is currently configured to run as `ec2-user`, which is a privileged defaul
 ### Configure SonarQube with a production database
 SonarQube 9.x ships with an embedded H2 database which is not supported for production use. For anything beyond a local demo, SonarQube should be configured to use PostgreSQL. This is set in `sonarqube-9.1.0.47736/conf/sonar.properties`.
 
-### Store the Jenkinsfile in the repository
-The Jenkinsfile should live in the root of the application repository rather than being pasted into the Jenkins job configuration. This makes the pipeline version-controlled alongside the application code, allows pipeline changes to be reviewed in pull requests, and means the pipeline history is part of the Git history.
-
-### Add email or Slack notifications
-The current `post {}` block only echoes messages to the console. In practice, the team needs to be notified when a build fails. The Jenkins Email Extension Plugin or Slack Notification Plugin can be used to send alerts to the relevant channel or individuals on failure.
 
 ---
 
