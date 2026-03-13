@@ -5,7 +5,8 @@ pipeline {
     // CONFIGURE YOUR SERVER IPs HERE — change these values only
     // ============================================================
     environment {
-        TOOLS_SERVER_IP    = "x.x.x.x"       // SonarQube, Nexus, Tomcat server IP
+        TOOLS_SERVER_IP    = "x.x.x.x"           // SonarQube, Nexus, Tomcat server IP
+        GIT_REPO           = "https://github.com/your-repo.git"
 
         // Built automatically from IP above — do not change below
         SONAR_HOST_URL     = "http://${TOOLS_SERVER_IP}:9000"
@@ -13,7 +14,7 @@ pipeline {
         NEXUS_URL          = "http://${TOOLS_SERVER_IP}:8081"
         NEXUS_REPO         = "maven-releases"
         TOMCAT_URL         = "http://${TOOLS_SERVER_IP}:8080"
-        email_recipient     = "you_email@gmail.com"
+        email_recipient    = "your-email@gmail.com"
     }
     // ============================================================
 
@@ -26,9 +27,9 @@ pipeline {
         stage('Git Checkout') {
             steps {
                 git branch: "${params.BRANCH}",
-                    url: 'https://github.com/Tejaspise93/my-app-java.git'
+                    url: "${GIT_REPO}"
                 script {
-                    // Use env.POM_VERSION so the value persists across all stages
+                     // Used env.POM_VERSION so the value persists across all stages
                     env.POM_VERSION = sh(
                         script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
                         returnStdout: true
@@ -58,19 +59,21 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                sh """
-                    mvn sonar:sonar \
-                        -Dsonar.projectKey=myweb \
-                        -Dsonar.host.url=${SONAR_HOST_URL} \
-                        -Dsonar.login=\$SONAR_TOKEN
-                """
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=myweb \
+                            -Dsonar.host.url=${SONAR_HOST_URL} \
+                            -Dsonar.login=\$SONAR_TOKEN
+                    """
+                }
             }
         }
 
         // Enforce Quality Gate — pipeline fails if Sonar gate does not pass
         stage('SonarQube Quality Gate') {
             steps {
-                timeout(time: 2, unit: 'MINUTES') {
+                timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
@@ -184,7 +187,7 @@ pipeline {
                  """
         }
         always {
-            cleanWs()   // clean workspace after every run to avoid stale artifacts
+            cleanWs()
         }
     }
 }

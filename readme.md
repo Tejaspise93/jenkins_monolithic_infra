@@ -281,12 +281,31 @@ Install SonarQube Scanner plugin → restart Jenkins
 Jenkins → Manage Jenkins → Configure System
     ↓
 Scroll to: SonarQube servers
-    Click: Add SonarQube
+    ↓
+Check: ✅ Enable injection of SonarQube server configuration as build environment variables
+    ↓
+Click: Add SonarQube
     Name:              SonarQube
     Server URL:        http://<TOOLS-SERVER-IP>:9000
     Server auth token: select sonar-token
     Click: Save
 ```
+
+**Step 5 — Configure SonarQube Webhook:**
+
+This is required for the Quality Gate stage to work. Without the webhook, SonarQube never notifies Jenkins that analysis is complete and the pipeline will time out waiting.
+
+```
+SonarQube → Administration → Configuration → Webhooks
+    ↓
+Create
+    Name:   jenkins
+    URL:    http://<JENKINS-SERVER-PUBLIC-IP>:8080/sonarqube-webhook/
+    ↓
+Save
+```
+
+> **Note:** Use the PUBLIC IP of your Jenkins server in the webhook URL. SonarQube calls back to Jenkins over the network so it needs the public IP.
 
 **What SonarQube checks:**
 - Bugs — code that will likely cause runtime errors
@@ -411,6 +430,49 @@ git push origin master
 
 ---
 
+### SMTP Configuration (Email Notifications)
+
+**Step 1 — Create Gmail App Password:**
+```
+Google Account → Security
+    ↓
+Enable 2-Step Verification if not already on
+    ↓
+Search: App passwords
+    ↓
+App name: jenkins → Click: Create
+    ↓
+Copy the 16 character password — this is your SMTP password
+```
+
+**Step 2 — Configure SMTP in Jenkins:**
+```
+Jenkins → Manage Jenkins → Configure System
+    ↓
+Scroll to: E-mail Notification
+    ↓
+SMTP server:        smtp.gmail.com
+    ↓
+Click: Advanced
+    Use SMTP Authentication: ✅ checked
+    Username:   your-email@gmail.com
+    Password:   <16 character app password>
+    Use SSL:    ✅ checked
+    SMTP Port:  465
+    ↓
+Test configuration by sending test e-mail
+    Test e-mail recipient: your-email@gmail.com
+    Click: Test configuration
+    ↓
+Should say: Email was successfully sent ✅
+    ↓
+Save
+```
+
+> **Note:** Gmail requires an App Password — not your regular Gmail login password. App Passwords are only available when 2-Step Verification is enabled on your Google account.
+
+---
+
 ## Jenkins Credentials Summary
 
 | Credential ID | Kind | Used For |
@@ -430,7 +492,8 @@ pipeline {
     // CONFIGURE YOUR SERVER IPs HERE — change these values only
     // ============================================================
     environment {
-        TOOLS_SERVER_IP    = "x.x.x.x"       // SonarQube, Nexus, Tomcat server IP
+        TOOLS_SERVER_IP    = "x.x.x.x"           // SonarQube, Nexus, Tomcat server IP
+        GIT_REPO           = "https://github.com/your-repo.git"
 
         // Built automatically from IP above — do not change below
         SONAR_HOST_URL     = "http://${TOOLS_SERVER_IP}:9000"
@@ -438,7 +501,7 @@ pipeline {
         NEXUS_URL          = "http://${TOOLS_SERVER_IP}:8081"
         NEXUS_REPO         = "maven-releases"
         TOMCAT_URL         = "http://${TOOLS_SERVER_IP}:8080"
-        email_recipient     = "you_email@gmail.com"
+        email_recipient    = "your-email@gmail.com"
     }
     // ============================================================
 
@@ -451,9 +514,9 @@ pipeline {
         stage('Git Checkout') {
             steps {
                 git branch: "${params.BRANCH}",
-                    url: 'https://github.com/Tejaspise93/my-app-java.git'
+                    url: "${GIT_REPO}"
                 script {
-                    // Use env.POM_VERSION so the value persists across all stages
+                     // Used env.POM_VERSION so the value persists across all stages
                     env.POM_VERSION = sh(
                         script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
                         returnStdout: true
@@ -483,19 +546,21 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                sh """
-                    mvn sonar:sonar \
-                        -Dsonar.projectKey=myweb \
-                        -Dsonar.host.url=${SONAR_HOST_URL} \
-                        -Dsonar.login=\$SONAR_TOKEN
-                """
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=myweb \
+                            -Dsonar.host.url=${SONAR_HOST_URL} \
+                            -Dsonar.login=\$SONAR_TOKEN
+                    """
+                }
             }
         }
 
         // Enforce Quality Gate — pipeline fails if Sonar gate does not pass
         stage('SonarQube Quality Gate') {
             steps {
-                timeout(time: 2, unit: 'MINUTES') {
+                timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
@@ -609,7 +674,7 @@ pipeline {
                  """
         }
         always {
-            cleanWs()   // clean workspace after every run to avoid stale artifacts
+            cleanWs()
         }
     }
 }
@@ -624,8 +689,8 @@ pipeline {
 | **Git Checkout** | Pulls code from GitHub using the branch parameter. Reads `pom.xml` to extract project version dynamically. |
 | **Build** | Runs `mvn clean package -DskipTests` to compile and produce a `.war` file in `target/`. |
 | **Test** | Runs `mvn test` to execute all JUnit tests. Publishes surefire XML reports to Jenkins. Pipeline stops if any test fails. |
-| **SonarQube Analysis** | Scans code quality and sends report to SonarQube server. |
-| **SonarQube Quality Gate** | Waits for SonarQube to evaluate the gate. Aborts the pipeline if the gate fails. |
+| **SonarQube Analysis** | Scans code quality and sends report to SonarQube server. Wrapped in `withSonarQubeEnv` — required for the Quality Gate stage to work. |
+| **SonarQube Quality Gate** | Waits for SonarQube to evaluate the gate (max 5 minutes). Aborts the pipeline if the gate fails. Requires the SonarQube webhook to be configured. |
 | **Nexus Upload** | Dynamically finds the `.war` and uploads it to the `maven-releases` repository on Nexus. |
 | **Deploy to Tomcat** | Downloads WAR from Nexus, undeploys old version, deploys new version to Tomcat. |
 
@@ -651,11 +716,12 @@ GitHub sends webhook to Jenkins (automatic)
         → surefire reports published to Jenkins
             ↓
     [Stage 4] SonarQube Analysis
+        → withSonarQubeEnv wrapper registers the analysis
         → scans code quality
         → report sent to Tools Server:9000
             ↓
     [Stage 5] SonarQube Quality Gate
-        → waits for gate result (max 2 min)
+        → waits for SonarQube webhook callback (max 5 min)
         → pipeline aborts if gate fails
             ↓
     [Stage 6] Nexus Upload
@@ -668,7 +734,7 @@ GitHub sends webhook to Jenkins (automatic)
         → deploys new version to Tools Server:8080
         → app live at Tools Server:8080/myweb
             ↓
-    [Post] Workspace cleaned, result echoed
+    [Post] Email notification sent, workspace cleaned
 ```
 
 ---
@@ -721,35 +787,9 @@ GitHub → Repo → Settings → Webhooks → Recent Deliveries
 
 **Immutable release artifacts** — The `maven-releases` repository has redeploy disabled. This enforces version discipline — the same version cannot be overwritten once uploaded, ensuring traceability between what is in Nexus and what is deployed.
 
----
+**`withSonarQubeEnv` wrapper** — Required for `waitForQualityGate` to work. The wrapper registers the analysis with the Jenkins pipeline context. Without it, Jenkins has no record of a SonarQube analysis happening and the Quality Gate stage throws an `IllegalStateException`.
 
-## Improvements From Previous Version
-
-The following changes were made to improve pipeline correctness and observability.
-
-### `env.POM_VERSION` scoping fix
-The original pipeline declared `POM_VERSION = ""` in the `environment {}` block and then assigned it inside a `script {}` block using a plain Groovy variable. In declarative pipelines this assignment does not persist across stages — downstream stages would silently receive an empty string. The fix is to write `env.POM_VERSION = ...` so Jenkins stores it in the environment map and makes it available to all subsequent stages.
-
-### SonarQube Quality Gate enforced
-The original pipeline ran SonarQube analysis but never checked whether the quality gate passed or failed, meaning a build with new bugs or security vulnerabilities would continue all the way to deployment. A new **SonarQube Quality Gate** stage was added after the analysis stage using `waitForQualityGate abortPipeline: true`, wrapped in a `timeout(time: 2, unit: 'MINUTES')` to prevent the pipeline from hanging if SonarQube is unreachable.
-
-### JUnit test results published
-The original Test stage ran `mvn test` but never collected the results. Jenkins has no visibility into which tests passed or failed, and no trend data over time. A `post { always { junit '**/target/surefire-reports/*.xml' } }` block was added inside the Test stage so results are published even when tests fail — which is exactly when you most need to see them.
-
-### `post {}` block added
-The original pipeline had no post-run handling. Three handlers were added:
-- `success` — echoes the job name, build number, and live app URL
-- `failure` — echoes the job name, build number, and a link to the console output
-- `always` — runs `cleanWs()` to delete the workspace after every build, preventing stale WARs or leftover files from a previous build interfering with the next one
-
-### Nexus `maven-releases` deployment policy corrected
-The original guide set the `maven-releases` repository to `Allow redeploy`. Release repositories should be immutable — once a version is uploaded it must not be overwritten. The setup guide now sets **Disable redeploy**, with a note explaining that a 400 error on re-upload is intentional and forces a version bump in `pom.xml` for every release.
-
-### Tomcat configured as a systemd service
-Tomcat was previously started with `startup.sh` only, which does not survive a server reboot. A systemd unit file was added so Tomcat starts automatically on boot and can be managed with `systemctl start|stop|restart tomcat`. The existing aliases (`tomstart`/`tomstop`) are kept for convenience — they still work for manual use and call the same underlying scripts.
-
-### Email notifications added
-The `post {}` block previously only echoed messages to the Jenkins console, meaning the team had no visibility into build outcomes unless they were actively watching Jenkins. Email notifications were added to both the `success` and `failure` handlers using the built-in `mail` step. Emails include the job name, build number, branch, and a direct link to the console output. Update `team@example.com` to the real recipient address and ensure the Jenkins SMTP server is configured under `Manage Jenkins → Configure System → E-mail Notification`.
+**SonarQube webhook** — Required for the Quality Gate to receive a callback from SonarQube. Without it the pipeline times out waiting for the gate result.
 
 ---
 
@@ -768,7 +808,6 @@ Nexus is currently configured to run as `ec2-user`, which is a privileged defaul
 
 ### Configure SonarQube with a production database
 SonarQube 9.x ships with an embedded H2 database which is not supported for production use. For anything beyond a local demo, SonarQube should be configured to use PostgreSQL. This is set in `sonarqube-9.1.0.47736/conf/sonar.properties`.
-
 
 ---
 
