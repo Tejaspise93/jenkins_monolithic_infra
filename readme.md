@@ -381,11 +381,8 @@ Jenkins -> Manage Jenkins -> Configure System -> E-mail Notification
 pipeline {
     agent any
 
-    // ============================================================
-    // CONFIGURE YOUR SERVER IPs HERE — change these values only
-    // ============================================================
     environment {
-        TOOLS_SERVER_IP    = "x.x.x.x"           // SonarQube, Nexus, Tomcat server IP
+        TOOLS_SERVER_IP    = "x.x.x.x"           // tool server IP
         GIT_REPO           = "https://github.com/your-repo.git"
 
         // Built automatically from IP above — do not change below
@@ -396,7 +393,6 @@ pipeline {
         TOMCAT_URL         = "http://${TOOLS_SERVER_IP}:8080"
         email_recipient    = "your-email@gmail.com"
     }
-    // ============================================================
 
     parameters {
         string(name: 'BRANCH', defaultValue: 'master', description: 'Branch to build')
