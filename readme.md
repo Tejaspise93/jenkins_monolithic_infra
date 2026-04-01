@@ -1,33 +1,21 @@
 # CI/CD Pipeline — Jenkins + Maven + SonarQube + Nexus + Tomcat
 
-## Overview
 
-This project sets up a full CI/CD pipeline using Jenkins to automate building, testing, code quality analysis, artifact storage, and deployment of a Java web application.
 
----
-
-## Infrastructure
-
-| Server | Purpose |
-|---|---|
-| Jenkins Server | Jenkins, Maven |
-| Tools Server | SonarQube (port 9000), Nexus (port 8081), Tomcat (port 8080) |
-
----
 
 ## Tools Used
 
 | Tool | Version | Purpose |
 |---|---|---|
 | Jenkins | Latest LTS | CI/CD orchestration |
-| Maven | 3.x | Build, test, and package Java project |
+| Maven | 3.x | Build, test, and package the Java project |
 | SonarQube | 9.1.0 | Static code quality analysis |
 | Nexus Repository Manager | 3.x | Artifact storage |
 | Tomcat | 9.0.115 | Web application server for deployment |
 | Java | 17 | Runtime for Jenkins, SonarQube, Tomcat |
 | Java | 8 | Runtime for Nexus |
-| Git | - | Source code management |
-| GitHub Webhook | - | Auto-trigger Jenkins on code push |
+| Git / GitHub | - | Source code management |
+| GitHub Webhook | - | Auto-triggers Jenkins on push |
 
 ---
 
@@ -35,197 +23,12 @@ This project sets up a full CI/CD pipeline using Jenkins to automate building, t
 
 | Plugin | Purpose |
 |---|---|
-| SonarQube Scanner Plugin | Integrates SonarQube analysis into pipeline |
-| Nexus Artifact Uploader | Uploads build artifacts to Nexus repository |
+| SonarQube Scanner Plugin | Integrates SonarQube analysis into the pipeline |
+| Nexus Artifact Uploader | Uploads build artifacts to the Nexus repository |
 | Deploy to Container Plugin | Deploys WAR files to Tomcat |
 
 **How to install a plugin:**
-
-Jenkins -> Manage Jenkins -> Plugins -> Available plugins -> search plugin name -> check the box -> Install -> check "Restart Jenkins when installation is complete" -> verify under Installed plugins tab
-
----
-
-## Server Setup
-
-### SonarQube (Tools Server)
-
-```bash
-yum install -y java-17
-cd /opt/
-wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-9.1.0.47736.zip
-unzip sonarqube-9.1.0.47736.zip
-useradd sonar
-chown -R sonar:sonar sonarqube-9.1.0.47736
-cd sonarqube-9.1.0.47736/bin/linux-x86-64
-
-# Edit sonar.sh — uncomment RUN_AS_USER and set it to sonar
-vi sonar.sh
-
-sh sonar.sh start
-sh sonar.sh status
-# Access at: http://<TOOLS-SERVER-IP>:9000
-# Default login: admin / admin (you will be forced to change this on first login)
-```
-
----
-
-### Nexus (Tools Server)
-
-```bash
-sudo yum install java-1.8.0
-cd /opt
-sudo wget https://download.sonatype.com/nexus/3/nexus-unix-x86-64-3.79.0-09.tar.gz
-tar -xvf nexus-unix-x86-64-3.79.0-09.tar.gz
-mv nexus-3.79.0-09 nexus3
-chown -R ec2-user:ec2-user nexus3 sonatype-work
-cd nexus3/bin
-
-# Edit nexus file — set run_as_user=ec2-user
-vi nexus
-
-ln -s /opt/nexus3/bin/nexus /etc/init.d/nexus
-chkconfig --add nexus
-chkconfig nexus on
-sudo service nexus start
-# Access at: http://<TOOLS-SERVER-IP>:8081
-# Get initial password:
-cat /opt/sonatype-work/nexus3/admin.password
-```
-
----
-
-### Tomcat (Tools Server)
-
-```bash
-yum install -y java-17
-cd /opt
-
-wget https://dlcdn.apache.org/tomcat/tomcat-9/v9.0.115/bin/apache-tomcat-9.0.115.tar.gz
-tar -xvf apache-tomcat-9.0.115.tar.gz
-mv apache-tomcat-9.0.115 tomcat
-rm apache-tomcat-9.0.115.tar.gz
-
-chmod +x /opt/tomcat/bin/*.sh
-```
-
-**Configure Tomcat Manager user:**
-
-```bash
-vi /opt/tomcat/conf/tomcat-users.xml
-```
-
-Add before `</tomcat-users>`:
-
-```xml
-<role rolename="manager-gui"/>
-<role rolename="manager-script"/>
-<user username="deployer"
-      password="deployer123"
-      roles="manager-gui,manager-script"/>
-```
-
-**Allow remote access to Manager:**
-
-```bash
-vi /opt/tomcat/webapps/manager/META-INF/context.xml
-```
-
-Comment out the Valve block:
-
-```xml
-<!--
-<Valve className="org.apache.catalina.valves.RemoteCIDRValve"
-       allow="127.0.0.0/8,::1/128" />
--->
-```
-
-**Start Tomcat:**
-
-```bash
-/opt/tomcat/bin/startup.sh
-
-# Verify
-ps aux | grep tomcat
-# Access at: http://<TOOLS-SERVER-IP>:8080
-# Manager at: http://<TOOLS-SERVER-IP>:8080/manager -> login: deployer / deployer123
-```
-
-**Optional — Create shortcuts:**
-
-```bash
-echo "alias tomstart='/opt/tomcat/bin/startup.sh'" >> ~/.bashrc
-echo "alias tomstop='/opt/tomcat/bin/shutdown.sh'" >> ~/.bashrc
-source ~/.bashrc
-```
-
-> **Note:** These aliases are a convenience for manual use. If the server reboots, Tomcat will not come back up automatically — use the systemd service below for that.
-
-**Configure Tomcat as a systemd service (auto-start on reboot):**
-
-Step 1 — Verify your Java path:
-```bash
-readlink -f $(which java)
-# Example output: /usr/lib/jvm/java-17-openjdk-amd64/bin/java
-# Strip /bin/java from the end — that is your JAVA_HOME
-# e.g. /usr/lib/jvm/java-17-openjdk-amd64
-```
-
-Step 2 — Create the service file:
-```bash
-vi /etc/systemd/system/tomcat.service
-```
-
-Paste this content:
-```ini
-[Unit]
-Description=Apache Tomcat Web Application Container
-After=network.target
-
-[Service]
-Type=forking
-User=root
-Group=root
-
-Environment="JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64"  # replace with your actual path from the readlink command above
-Environment="CATALINA_HOME=/opt/tomcat"
-Environment="CATALINA_BASE=/opt/tomcat"
-Environment="CATALINA_PID=/opt/tomcat/temp/tomcat.pid"
-
-ExecStart=/opt/tomcat/bin/startup.sh
-ExecStop=/opt/tomcat/bin/shutdown.sh
-
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Step 3 — Reload systemd and enable the service:
-```bash
-systemctl daemon-reload
-systemctl enable tomcat
-systemctl start tomcat
-systemctl status tomcat
-```
-
-**Useful systemd commands:**
-```bash
-systemctl start tomcat
-systemctl stop tomcat
-systemctl restart tomcat
-systemctl status tomcat
-```
-
----
-
-### Maven (Jenkins Server)
-
-```bash
-sudo apt update
-sudo apt install -y maven
-mvn --version
-```
+Jenkins → Manage Jenkins → Plugins → Available plugins → search name → check box → Install → check "Restart Jenkins when installation is complete" → verify under Installed plugins tab
 
 ---
 
@@ -233,39 +36,40 @@ mvn --version
 
 ### SonarQube
 
-**Step 1 — Generate an authentication token:**
+**Step 1 — Generate a Jenkins Authentication Token**
 
-SonarQube -> top right corner -> My Account -> Security tab -> Generate Tokens -> set name to `jenkins-token`, type: User Token -> Generate
+SonarQube → top-right corner → My Account → Security tab → Generate Tokens
+- Name: `jenkins-token`
+- Type: User Token
+- Click Generate — copy the token immediately, it is shown only once
 
-Copy the token immediately — it is shown only once.
+**Step 2 — Add the Token to Jenkins**
 
-**Step 2 — Add token to Jenkins:**
-
-Jenkins -> Manage Jenkins -> Credentials -> Global -> Add Credentials
+Jenkins → Manage Jenkins → Credentials → Global → Add Credentials
 - Kind: Secret text
 - Secret: paste the token
-- ID: sonar-token
+- ID: `sonar-token`
 - Save
 
-**Step 3 — Configure SonarQube server in Jenkins:**
+**Step 3 — Configure the SonarQube Server in Jenkins**
 
-Jenkins -> Manage Jenkins -> Configure System -> SonarQube servers -> Add SonarQube
-- Name: SonarQube
-- Server URL: http://<TOOLS-SERVER-IP>:9000
-- Server auth token: sonar-token
+Jenkins → Manage Jenkins → Configure System → SonarQube servers → Add SonarQube
+- Name: `SonarQube`
+- Server URL: `http://<TOOLS-SERVER-IP>:9000`
+- Server auth token: `sonar-token`
 - Check: Enable injection of SonarQube server configuration as build environment variables
 - Save
 
-**Step 4 — Configure SonarQube webhook:**
+**Step 4 — Configure the SonarQube Webhook**
 
-This is required for the Quality Gate stage to work. Without it, SonarQube never notifies Jenkins that analysis is complete and the pipeline will time out.
+> **Note:** Without this webhook, SonarQube never notifies Jenkins that analysis is complete. The Quality Gate stage will time out.
 
-SonarQube -> Administration -> Configuration -> Webhooks -> Create
-- Name: jenkins
-- URL: http://<JENKINS-SERVER-PUBLIC-IP>:8080/sonarqube-webhook/
+SonarQube → Administration → Configuration → Webhooks → Create
+- Name: `jenkins`
+- URL: `http://<JENKINS-SERVER-PUBLIC-IP>:8080/sonarqube-webhook/`
 - Save
 
-> **Note:** Use the public IP of the Jenkins server in the webhook URL. SonarQube calls back to Jenkins over the network.
+> **Note:** Use the public IP of the Jenkins server. The trailing slash in `/sonarqube-webhook/` is required.
 
 **What SonarQube checks:** bugs, vulnerabilities, code smells, test coverage, and code duplications.
 
@@ -273,95 +77,101 @@ SonarQube -> Administration -> Configuration -> Webhooks -> Create
 
 ### Nexus
 
-**Step 1 — Login to Nexus:**
+**Step 1 — Login to Nexus**
 
-Open `http://<TOOLS-SERVER-IP>:8081`. Username: `admin`. Get the initial password by running `cat /opt/sonatype-work/nexus3/admin.password`. After first login, set a new password and disable anonymous access when prompted.
+Open `http://<TOOLS-SERVER-IP>:8081`. Username: `admin`. Get the initial password from the Tools Server:
 
-**Step 2 — Create the maven-releases repository:**
+```bash
+cat /opt/sonatype-work/nexus3/admin.password
+```
 
-Left sidebar -> Server Administration (gear icon) -> Repository -> Repositories -> Create repository -> select `maven2 (hosted)`
-- Name: maven-releases
+After first login, set a new password and disable anonymous access when prompted.
+
+**Step 2 — Create the maven-releases Repository**
+
+Left sidebar → Server Administration (gear icon) → Repository → Repositories → Create repository → `maven2 (hosted)`
+- Name: `maven-releases`
 - Version policy: Release
 - Layout policy: Strict
 - Deployment policy: Disable redeploy
 - Create repository
 
-> **Note:** Disable redeploy keeps release artifacts immutable. Uploading the same version twice will fail with a 400 error — this is intentional and forces a version bump in `pom.xml` for every release.
+> **Note:** Disable redeploy keeps release artifacts immutable. Uploading the same version twice fails with a 400 error — this is intentional and forces a version bump in `pom.xml` for every release.
 
-**Step 3 — Add Nexus credentials to Jenkins:**
+**Step 3 — Add Nexus Credentials to Jenkins**
 
-Jenkins -> Manage Jenkins -> Credentials -> Global -> Add Credentials
+Jenkins → Manage Jenkins → Credentials → Global → Add Credentials
 - Kind: Username with password
-- Username: admin
+- Username: `admin`
 - Password: your Nexus admin password
-- ID: nexus3
+- ID: `nexus3`
 - Save
 
 **Where artifacts are stored:**
 ```
-http://<TOOLS-SERVER-IP>:8081 -> Browse -> maven-releases
--> in -> javahome -> myweb -> <version>
--> myweb-<version>.war
--> myweb-<version>.war.md5   (auto-generated)
--> myweb-<version>.war.sha1  (auto-generated)
+http://<TOOLS-SERVER-IP>:8081 → Browse → maven-releases
+→ in → javahome → myweb → <version>
+→ myweb-<version>.war
+→ myweb-<version>.war.md5   (auto-generated)
+→ myweb-<version>.war.sha1  (auto-generated)
 ```
 
 ---
 
 ### Tomcat Credentials in Jenkins
 
-Jenkins -> Manage Jenkins -> Credentials -> Global -> Add Credentials
+Jenkins → Manage Jenkins → Credentials → Global → Add Credentials
 - Kind: Username with password
-- Username: deployer
-- Password: deployer123
-- ID: tomcat-deployer
+- Username: `deployer`
+- Password: `deployer123`
+- ID: `tomcat-deployer`
 - Save
 
 ---
 
 ### GitHub Webhook
 
-**Step 1 — Enable webhook trigger in Jenkins:**
+**Step 1 — Enable Webhook Trigger in Jenkins**
 
-Jenkins -> your pipeline job -> Configure -> Build Triggers -> check "GitHub hook trigger for GITScm polling" -> Save
+Jenkins → your pipeline job → Configure → Build Triggers → check "GitHub hook trigger for GITScm polling" → Save
 
-**Step 2 — Add webhook in GitHub:**
+**Step 2 — Add the Webhook in GitHub**
 
-GitHub -> Repository -> Settings -> Webhooks -> Add webhook
-- Payload URL: http://<JENKINS-SERVER-PUBLIC-IP>:8080/github-webhook/
-- Content type: application/json
+GitHub → Repository → Settings → Webhooks → Add webhook
+- Payload URL: `http://<JENKINS-SERVER-PUBLIC-IP>:8080/github-webhook/`
+- Content type: `application/json`
 - Events: Just the push event
 - Active: checked
 - Add webhook
 
 > **Note:** The trailing slash in `/github-webhook/` is required. Port 8080 must be open in the Jenkins Server security group.
 
-**Step 3 — Verify webhook delivery:**
+**Step 3 — Verify Webhook Delivery**
 
-GitHub -> Repository -> Settings -> Webhooks -> click your webhook -> Recent Deliveries — should show a green tick on the ping event.
+GitHub → Repository → Settings → Webhooks → click your webhook → Recent Deliveries — should show a green tick on the ping event.
 
 ---
 
 ### SMTP Configuration (Email Notifications)
 
-**Step 1 — Create a Gmail App Password:**
+**Step 1 — Create a Gmail App Password**
 
-Google Account -> Security -> enable 2-Step Verification if not already on -> search "App passwords" -> App name: jenkins -> Create -> copy the 16-character password
-
-**Step 2 — Configure SMTP in Jenkins:**
-
-Jenkins -> Manage Jenkins -> Configure System -> E-mail Notification
-- SMTP server: smtp.gmail.com
-- Click Advanced
-  - Use SMTP Authentication: checked
-  - Username: your-email@gmail.com
-  - Password: the 16-character app password
-  - Use SSL: checked
-  - SMTP Port: 465
-- Test configuration by sending a test email to yourself
-- Save
+Google Account → Security → enable 2-Step Verification if not already on → search "App passwords" → App name: `jenkins` → Create → copy the 16-character password
 
 > **Note:** Gmail requires an App Password, not your regular Gmail password. App Passwords are only available when 2-Step Verification is enabled.
+
+**Step 2 — Configure SMTP in Jenkins**
+
+Jenkins → Manage Jenkins → Configure System → E-mail Notification
+- SMTP server: `smtp.gmail.com`
+- Click Advanced
+  - Use SMTP Authentication: checked
+  - Username: `your-email@gmail.com`
+  - Password: the 16-character app password
+  - Use SSL: checked
+  - SMTP Port: `465`
+- Test configuration by sending a test email to yourself
+- Save
 
 ---
 
@@ -369,23 +179,24 @@ Jenkins -> Manage Jenkins -> Configure System -> E-mail Notification
 
 | Credential ID | Kind | Used For |
 |---|---|---|
-| sonar-token | Secret text | SonarQube authentication |
-| nexus3 | Username with password | Nexus artifact upload |
-| tomcat-deployer | Username with password | Tomcat WAR deployment |
+| `sonar-token` | Secret text | SonarQube authentication |
+| `nexus3` | Username with password | Nexus artifact upload |
+| `tomcat-deployer` | Username with password | Tomcat WAR deployment |
 
 ---
 
 ## Jenkins Pipeline
+
+Update `TOOLS_SERVER_IP`, `GIT_REPO`, and `email_recipient` before running.
 
 ```groovy
 pipeline {
     agent any
 
     environment {
-        TOOLS_SERVER_IP    = "x.x.x.x"           // tool server IP
+        TOOLS_SERVER_IP    = "x.x.x.x"
         GIT_REPO           = "https://github.com/your-repo.git"
 
-        // Built automatically from IP above — do not change below
         SONAR_HOST_URL     = "http://${TOOLS_SERVER_IP}:9000"
         SONAR_TOKEN        = credentials('sonar-token')
         NEXUS_URL          = "http://${TOOLS_SERVER_IP}:8081"
@@ -405,7 +216,6 @@ pipeline {
                 git branch: "${params.BRANCH}",
                     url: "${GIT_REPO}"
                 script {
-                    // Used env.POM_VERSION so the value persists across all stages
                     env.POM_VERSION = sh(
                         script: "mvn help:evaluate -Dexpression=project.version -q -DforceStdout",
                         returnStdout: true
@@ -446,7 +256,6 @@ pipeline {
             }
         }
 
-        // Enforce Quality Gate — pipeline fails if Sonar gate does not pass
         stage('SonarQube Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
@@ -499,7 +308,7 @@ pipeline {
                             passwordVariable: 'TOMCAT_PASS'
                         )
                     ]) {
-                        // Step 1: Download WAR from Nexus
+                        // Download WAR from Nexus
                         sh """
                             curl --fail \
                                 -u \$NEXUS_USER:\$NEXUS_PASS \
@@ -507,14 +316,14 @@ pipeline {
                                 ${nexusWarUrl}
                         """
 
-                        // Step 2: Undeploy old version
+                        // Undeploy old version
                         sh """
                             curl -s -o /dev/null \
                                 -u \$TOMCAT_USER:\$TOMCAT_PASS \
                                 "${TOMCAT_URL}/manager/text/undeploy?path=/myweb" || true
                         """
 
-                        // Step 3: Deploy new WAR to Tomcat
+                        // Deploy new WAR to Tomcat
                         sh """
                             curl -v --fail \
                                 -u \$TOMCAT_USER:\$TOMCAT_PASS \
@@ -631,7 +440,7 @@ Email notification sent, workspace cleaned
 
 ## Design Decisions
 
-**Branch as parameter** — The pipeline accepts a branch name at runtime so the same pipeline can build `master`, `dev`, or any feature branch without editing the Jenkinsfile.
+**Branch as parameter** — The pipeline accepts a branch name at runtime so the same Jenkinsfile can build `master`, `dev`, or any feature branch without editing it.
 
 **Dynamic artifact extraction** — `find target/ -name '*.war'` is used instead of hardcoding the WAR filename so the pipeline works even when the version in `pom.xml` changes.
 
@@ -651,7 +460,7 @@ Email notification sent, workspace cleaned
 
 ## Suggested Improvements
 
-**Use a dedicated SonarQube service account** — The current setup generates the Jenkins token from the `admin` account. If the admin password is rotated or the account is disabled, the integration breaks. Create a dedicated service account (e.g., `jenkins-bot`), grant it only the permissions it needs, and generate the token from that account.
+**Use a dedicated SonarQube service account** — The current setup generates the Jenkins token from the `admin` account. If the admin password is rotated or the account is disabled, the integration breaks. Create a dedicated service account (e.g. `jenkins-bot`), grant it only the permissions it needs, and generate the token from that account.
 
 **Disable anonymous access on Nexus** — Anonymous access should be explicitly disabled after the initial setup. It allows unauthenticated users to browse and download artifacts, which is a security risk in any externally accessible environment.
 
@@ -665,13 +474,13 @@ Email notification sent, workspace cleaned
 
 **SonarQube Dashboard:**
 ```
-http://<TOOLS-SERVER-IP>:9000 -> Projects -> myweb
+http://<TOOLS-SERVER-IP>:9000 → Projects → myweb
 ```
 
 **Nexus Artifact:**
 ```
-http://<TOOLS-SERVER-IP>:8081 -> Browse -> maven-releases
--> in -> javahome -> myweb -> <version> -> myweb-<version>.war
+http://<TOOLS-SERVER-IP>:8081 → Browse → maven-releases
+→ in → javahome → myweb → <version> → myweb-<version>.war
 ```
 
 **Tomcat Manager:**
@@ -688,19 +497,8 @@ http://<TOOLS-SERVER-IP>:8080/myweb
 
 **Webhook Deliveries:**
 ```
-GitHub -> Repository -> Settings -> Webhooks -> Recent Deliveries
+GitHub → Repository → Settings → Webhooks → Recent Deliveries
 ```
-
----
-
-## AWS Security Group — Required Open Ports
-
-| Server | Port | Purpose |
-|---|---|---|
-| Jenkins Server | 8080 | Jenkins UI and GitHub webhook receiver |
-| Tools Server | 9000 | SonarQube |
-| Tools Server | 8081 | Nexus |
-| Tools Server | 8080 | Tomcat / Live application |
 
 ---
 
