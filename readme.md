@@ -458,18 +458,6 @@ Email notification sent, workspace cleaned
 
 ---
 
-## Suggested Improvements
-
-**Use a dedicated SonarQube service account** — The current setup generates the Jenkins token from the `admin` account. If the admin password is rotated or the account is disabled, the integration breaks. Create a dedicated service account (e.g. `jenkins-bot`), grant it only the permissions it needs, and generate the token from that account.
-
-**Disable anonymous access on Nexus** — Anonymous access should be explicitly disabled after the initial setup. It allows unauthenticated users to browse and download artifacts, which is a security risk in any externally accessible environment.
-
-**Run Nexus under a dedicated service account** — Nexus currently runs as `ec2-user`, which has broad system access. Create a dedicated `nexus` OS user with no login shell and no sudo rights, scoped only to the Nexus directories — the same pattern already used for SonarQube with the `sonar` user.
-
-**Configure SonarQube with a production database** — SonarQube 9.x ships with an embedded H2 database that is not supported for production use. For anything beyond a local demo, configure SonarQube to use PostgreSQL via `sonarqube-9.1.0.47736/conf/sonar.properties`.
-
----
-
 ## Verifying Results
 
 **SonarQube Dashboard:**
