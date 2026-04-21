@@ -495,4 +495,3 @@ GitHub → Repository → Settings → Webhooks → Recent Deliveries
 - **Application:** myweb
 - **Group ID:** in.javahome
 - **Packaging:** WAR
-- **Repository:** https://github.com/Tejaspise93/my-app-java
